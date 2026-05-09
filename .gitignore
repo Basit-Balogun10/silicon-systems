@@ -1,0 +1,78 @@
+# Organizer-only (NEVER push to public repo)
+seeded_bugs/
+/evaluation/
+/server/
+/docker/
+AGENTIC_AI_DV_CHALLENGE_2026.md
+
+# cocotb/simulator test artifacts
+results.xml
+dump.vcd
+dump.fst
+ucli.key
+inter.vpd
+novas.*
+
+# Build artifacts
+sim_build/
+obj_dir/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+*.egg
+*.so
+*.vcd
+*.fst
+*.vpd
+*.fsdb
+*.log
+!phase3_materials/**/*.log
+results/
+coverage.dat
+coverage.info
+coverage_annotated/
+*.o
+*.d
+*.a
+Vtop
+Vsim
+simv
+simv.daidir/
+csrc/
+*.vdb/
+work/
+cov_work/
+*.ucdb
+transcript
+modelsim.ini
+xrun.log
+xcelium.d/
+.venv/
+venv/
+env/
+
+# Editor
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python virtual environment
+venv/
+.venv
+
+# Verilator
+obj_dir/
+
+# DVT
+.dvt/
+
+# Environment variables
+.env

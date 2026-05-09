@@ -1,0 +1,829 @@
+# Secure UART System - ASCII Art Diagrams
+
+Comprehensive ASCII art diagrams showing the complete architecture, data flow, and signal relationships of the Secure UART System.
+
+---
+
+## 1. Complete System Architecture - Full Detail
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                            TINYQV RISC-V CPU                                           │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                            │
+│  │  Instruction │    │   Register   │    │    Memory    │                            │
+│  │   Fetch      │───▶│     File     │───▶│  Controller  │                            │
+│  └──────────────┘    └──────────────┘    └───────┬──────┘                            │
+│                                                    │                                    │
+│                                   Peripheral Bus   │                                    │
+│                                   ┌────────────────┼────────────────┐                  │
+│                                   │  address[31:0] │                │                  │
+│                                   │  data_in[31:0] │                │                  │
+│                                   │ data_write_n   │                │                  │
+│                                   │  data_read_n   │                │                  │
+│                                   └────────────────┼────────────────┘                  │
+└────────────────────────────────────────────────────┼───────────────────────────────────┘
+                                                     │
+                     CPU always works with PLAINTEXT │
+                                                     ▼
+┌──────────────────────────────────────────────────────────────────────────────────────────┐
+│                         SECURE UART PERIPHERAL                                           │
+│                         (secure_uart_peripheral.v)                                       │
+│                                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────────────────────┐ │
+│  │                         REGISTER INTERFACE                                         │ │
+│  │  ┌──────────────────────────────────────────────────────────────────────────────┐ │ │
+│  │  │  Address Decoder (6-bit address bus)                                         │ │ │
+│  │  │                                                                               │ │ │
+│  │  │  UART Registers (0x00-0x14):         AES Registers (0x20-0x34):             │ │ │
+│  │  │  ┌────────────────┐                  ┌────────────────────┐                 │ │ │
+│  │  │  │ 0x00 UART_CTRL │                  │ 0x20 AES_CTRL      │                 │ │ │
+│  │  │  │ 0x04 STATUS    │                  │ 0x24 AES_STATUS    │                 │ │ │
+│  │  │  │ 0x08 TX_DATA   │◄─────┐           │ 0x28 AES_KEY0      │                 │ │ │
+│  │  │  │ 0x0C RX_DATA   │──────┼───┐       │ 0x2C AES_KEY1      │                 │ │ │
+│  │  │  │ 0x10 INT_EN    │      │   │       │ 0x30 AES_KEY2      │                 │ │ │
+│  │  │  │ 0x14 INT_CLR   │      │   │       │ 0x34 AES_KEY3      │                 │ │ │
+│  │  │  └────────────────┘      │   │       └────────────────────┘                 │ │ │
+│  │  └──────────────────────────┼───┼──────────────────────────────────────────────┘ │ │
+│  └────────────────────────────┼───┼────────────────────────────────────────────────┘ │
+│                                │   │                                                   │
+│         CPU writes plaintext   │   │   CPU reads plaintext                             │
+│         to TX_DATA (0x08) ────►│   └─── from RX_DATA (0x0C)                            │
+│                                │                                                       │
+│  ┌─────────────────────────────▼──────────────────────────────────────────────────┐   │
+│  │                    AES STREAMING CONTROLLER                                     │   │
+│  │                    (aes_uart_streaming.v)                                       │   │
+│  │                                                                                 │   │
+│  │  ┌──────────────────────────────────┐  ┌──────────────────────────────────┐   │   │
+│  │  │        TX PATH (Encryption)       │  │       RX PATH (Decryption)       │   │   │
+│  │  │                                   │  │                                   │   │   │
+│  │  │  ┌─────────────────────────────┐ │  │  ┌─────────────────────────────┐ │   │   │
+│  │  │  │  16-Byte Input Buffer       │ │  │  │  16-Byte Input Buffer       │ │   │   │
+│  │  │  │  [buf[127:0]]               │ │  │  │  [buf[127:0]]               │ │   │   │
+│  │  │  │                              │ │  │  │                              │ │   │   │
+│  │  │  │  Accumulates bytes MSB first:│ │  │  │  Accumulates bytes MSB first:│ │   │   │
+│  │  │  │  buf <= {buf[119:0], byte}  │ │  │  │  buf <= {buf[119:0], byte}  │ │   │   │
+│  │  │  └──────────────┬──────────────┘ │  │  └──────────────┬──────────────┘ │   │   │
+│  │  │                 │                 │  │                 │                 │   │   │
+│  │  │     When 16 bytes buffered       │  │     When 16 bytes buffered       │   │   │
+│  │  │                 ▼                 │  │                 ▼                 │   │   │
+│  │  │  ┌─────────────────────────────┐ │  │  ┌─────────────────────────────┐ │   │   │
+│  │  │  │      AES CORE               │ │  │  │      AES CORE               │ │   │   │
+│  │  │  │    (aes_core.v)             │ │  │  │    (aes_core.v)             │ │   │   │
+│  │  │  │                              │ │  │  │                              │ │   │   │
+│  │  │  │  Mode: ENCRYPT               │ │  │  │  Mode: DECRYPT               │ │   │   │
+│  │  │  │  Latency: 11 cycles          │ │  │  │  Latency: 11 cycles          │ │   │   │
+│  │  │  │                              │ │  │  │                              │ │   │   │
+│  │  │  │  128-bit plaintext  ──► AES │ │  │  │  128-bit ciphertext ──► AES │ │   │   │
+│  │  │  │  ──► 128-bit ciphertext     │ │  │  │  ──► 128-bit plaintext      │ │   │   │
+│  │  │  └──────────────┬──────────────┘ │  │  └──────────────┬──────────────┘ │   │   │
+│  │  │                 │                 │  │                 │                 │   │   │
+│  │  │                 ▼                 │  │                 ▼                 │   │   │
+│  │  │  ┌─────────────────────────────┐ │  │  ┌─────────────────────────────┐ │   │   │
+│  │  │  │  16-Byte Output Serializer  │ │  │  │  16-Byte Output Serializer  │ │   │   │
+│  │  │  │                              │ │  │  │                              │ │   │   │
+│  │  │  │  Outputs MSB first:          │ │  │  │  Outputs MSB first:          │ │   │   │
+│  │  │  │  byte_out = buf[127:120]    │ │  │  │  byte_out = buf[127:120]    │ │   │   │
+│  │  │  │  buf <= {buf[119:0], 8'h00} │ │  │  │  buf <= {buf[119:0], 8'h00} │ │   │   │
+│  │  │  └──────────────┬──────────────┘ │  │  └──────────────┬──────────────┘ │   │   │
+│  │  └─────────────────┼─────────────────┘  └─────────────────┼─────────────────┘   │   │
+│  │                    │                                       │                     │   │
+│  │     Ciphertext     │                        Plaintext     │                     │   │
+│  │     (if AES_EN=1)  │                        (if AES_EN=1) │                     │   │
+│  │                    │                                       │                     │   │
+│  │     ┌──────────────▼───────────────┐    ┌─────────────────▼───────────┐        │   │
+│  │     │  BYPASS MUX (when AES_EN=0)  │    │  BYPASS MUX (when AES_EN=0) │        │   │
+│  │     │  Direct passthrough without  │    │  Direct passthrough without │        │   │
+│  │     │  encryption/buffering        │    │  decryption/buffering       │        │   │
+│  │     └──────────────┬───────────────┘    └─────────────────┬───────────┘        │   │
+│  └────────────────────┼──────────────────────────────────────┼────────────────────┘   │
+│                       │ (Ciphertext when encrypted)           │ (Plaintext when decrypted)
+│                       │                                       │                        │
+│  ┌────────────────────▼──────────────┐    ┌──────────────────▼────────────────┐      │
+│  │        UART TX                     │    │         UART RX                   │      │
+│  │  (uart_tx.v)                       │    │   (uart_rx.v)                     │      │
+│  │                                    │    │                                    │      │
+│  │  ┌──────────────────────────────┐ │    │  ┌──────────────────────────────┐ │      │
+│  │  │  Baud Generator              │ │    │  │  Baud Tick Sampler           │ │      │
+│  │  │  (uart_baud_generator.v)     │ │    │  │  (3x oversampling)           │ │      │
+│  │  │                               │ │    │  │                               │ │      │
+│  │  │  Programmable baud rates:    │ │    │  │  Start bit detection          │ │      │
+│  │  │  9600, 19200, 38400,         │ │    │  │  Majority voting              │ │      │
+│  │  │  115200, 230400, 460800,     │ │    │  │  Frame error checking         │ │      │
+│  │  │  921600                       │ │    │  │                               │ │      │
+│  │  └───────────┬──────────────────┘ │    │  └───────────┬──────────────────┘ │      │
+│  │              │ baud_tick           │    │              │ rx_sample         │      │
+│  │              ▼                     │    │              ▼                    │      │
+│  │  ┌──────────────────────────────┐ │    │  ┌──────────────────────────────┐ │      │
+│  │  │  TX Shift Register (10-bit)  │ │    │  │  RX Shift Register (10-bit)  │ │      │
+│  │  │                               │ │    │  │                               │ │      │
+│  │  │  Format: 8N1                 │ │    │  │  Format: 8N1                 │ │      │
+│  │  │  [Start|D0-D7|Stop]          │ │    │  │  [Start|D0-D7|Stop]          │ │      │
+│  │  │                               │ │    │  │                               │ │      │
+│  │  │  LSB transmitted first       │ │    │  │  LSB received first          │ │      │
+│  │  └───────────┬──────────────────┘ │    │  └───────────┬──────────────────┘ │      │
+│  └──────────────┼─────────────────────┘    └──────────────┼────────────────────┘      │
+│                 │                                          │                            │
+│                 │ uart_tx_pin                              │ uart_rx_pin                │
+│                 │ (Serial ciphertext out)                  │ (Serial ciphertext in)     │
+└─────────────────┼──────────────────────────────────────────┼────────────────────────────┘
+                  │                                          │
+                  ▼                                          ▼
+           TX Pin (Physical)                          RX Pin (Physical)
+           Transmits CIPHERTEXT                       Receives CIPHERTEXT
+           (when AES_EN=1)                            (when AES_EN=1)
+```
+
+---
+
+## 2. Data Flow - Transmission Path (CPU → Serial TX)
+
+```
+Step 1: CPU Writes Plaintext
+════════════════════════════
+    ┌──────────────────┐
+    │  CPU writes to   │
+    │  TX_DATA (0x08)  │
+    │                  │
+    │  Value: 'H'      │
+    │  (0x48)          │
+    └────────┬─────────┘
+             │
+             ▼
+    ┌──────────────────┐
+    │ Register         │
+    │ Interface        │
+    │ (cpu_tx_write=1) │
+    └────────┬─────────┘
+             │
+             ▼
+
+Step 2: Byte Enters AES TX Buffer
+══════════════════════════════════
+    ┌─────────────────────────────┐
+    │  TX Streaming Buffer        │
+    │                             │
+    │  Byte 0: 0x48 ('H')         │
+    │  Byte 1: waiting...         │
+    │  Byte 2: waiting...         │
+    │  ...                        │
+    │  Byte 15: waiting...        │
+    │                             │
+    │  Buffer count: 1/16         │
+    └─────────────────────────────┘
+             │
+             │ (CPU writes 15 more bytes)
+             ▼
+
+Step 3: Buffer Full → Trigger Encryption (if AES_EN=1)
+═══════════════════════════════════════════════════════
+    ┌─────────────────────────────┐
+    │  TX Buffer (16 bytes full)  │
+    │                             │
+    │  [0x48][0x65][0x6C][0x6C]  │  "Hell"
+    │  [0x6F][0x20][0x57][0x6F]  │  "o Wo"
+    │  [0x72][0x6C][0x64][0x21]  │  "rld!"
+    │  [0x0A][0x0D][0x00][0x00]  │  "\n\r\0\0"
+    │                             │
+    │  128-bit plaintext block    │
+    └──────────┬──────────────────┘
+               │
+               ▼
+    ┌─────────────────────────────┐
+    │  AES-128 Encryption         │
+    │  (aes_core.v - TX instance) │
+    │                             │
+    │  Input:  0x48656C6C6F20576F │
+    │          726C64210A0D0000   │
+    │                             │
+    │  Key:    [128-bit AES key]  │
+    │                             │
+    │  Processing: 11 cycles      │
+    │  @ 70MHz = 157ns            │
+    │                             │
+    │  Output: [Encrypted block]  │
+    │          0xA1B2C3D4E5F6...  │
+    └──────────┬──────────────────┘
+               │
+               ▼
+
+Step 4: Serialization
+═══════════════════════
+    ┌─────────────────────────────┐
+    │  Output Serializer          │
+    │                             │
+    │  128-bit ciphertext block   │
+    │  broken into 16 bytes       │
+    │                             │
+    │  Byte 0:  0xA1 ──► UART TX  │
+    │  Byte 1:  0xB2 ──► UART TX  │
+    │  Byte 2:  0xC3 ──► UART TX  │
+    │  ...                        │
+    │  Byte 15: 0x?? ──► UART TX  │
+    └──────────┬──────────────────┘
+               │ (One byte at a time)
+               ▼
+
+Step 5: UART Transmission
+═══════════════════════════
+    ┌─────────────────────────────┐
+    │  UART TX Module             │
+    │                             │
+    │  Takes byte (0xA1)          │
+    │  ┌─────────────────────┐    │
+    │  │ Parallel-to-Serial  │    │
+    │  │ Shift Register      │    │
+    │  └─────────────────────┘    │
+    │           │                 │
+    │           ▼                 │
+    │  Serial output format:      │
+    │  [START][D0-D7][STOP]       │
+    │                             │
+    │  At configured baud rate    │
+    │  (e.g., 115200 baud)        │
+    └──────────┬──────────────────┘
+               │
+               ▼
+         uart_tx_pin
+         (Serial wire)
+         Transmits encrypted data
+
+Timeline for 16-byte Message:
+═════════════════════════════
+  CPU writes:        16 writes × ~1 cycle = ~16 cycles
+  Buffer wait:       Until 16 bytes accumulated
+  AES encryption:    11 cycles @ 70MHz = 157ns
+  UART TX (115200):  16 bytes × 86.8μs/byte = 1.39ms
+  
+  Total latency:     ~1.39ms (UART TX is bottleneck)
+  AES overhead:      157ns (0.01% of total time)
+```
+
+---
+
+## 3. Data Flow - Reception Path (Serial RX → CPU)
+
+```
+Step 1: Serial Reception
+═════════════════════════
+         uart_rx_pin
+         (Serial wire)
+         Receives encrypted data
+               │
+               ▼
+    ┌─────────────────────────────┐
+    │  UART RX Module             │
+    │                             │
+    │  Serial-to-Parallel         │
+    │  Shift Register             │
+    │                             │
+    │  Samples at 3× baud rate    │
+    │  Majority voting for        │
+    │  noise immunity             │
+    │                             │
+    │  Detects: START bit         │
+    │  Shifts:  D0-D7 (LSB first) │
+    │  Checks:  STOP bit          │
+    │                             │
+    │  Assembled byte: 0xA1       │
+    └──────────┬──────────────────┘
+               │
+               ▼
+
+Step 2: Byte Enters AES RX Buffer
+══════════════════════════════════
+    ┌─────────────────────────────┐
+    │  RX Streaming Buffer        │
+    │                             │
+    │  Byte 0: 0xA1 (received)    │
+    │  Byte 1: waiting...         │
+    │  Byte 2: waiting...         │
+    │  ...                        │
+    │  Byte 15: waiting...        │
+    │                             │
+    │  Buffer count: 1/16         │
+    └─────────────────────────────┘
+               │
+               │ (UART receives 15 more bytes)
+               ▼
+
+Step 3: Buffer Full → Trigger Decryption (if AES_EN=1)
+═══════════════════════════════════════════════════════
+    ┌─────────────────────────────┐
+    │  RX Buffer (16 bytes full)  │
+    │                             │
+    │  [Received ciphertext]      │
+    │  0xA1B2C3D4E5F6...          │
+    │                             │
+    │  128-bit ciphertext block   │
+    └──────────┬──────────────────┘
+               │
+               ▼
+    ┌─────────────────────────────┐
+    │  AES-128 Decryption         │
+    │  (aes_core.v - RX instance) │
+    │                             │
+    │  Input:  0xA1B2C3D4E5F6...  │
+    │          [Encrypted block]  │
+    │                             │
+    │  Key:    [Same 128-bit key] │
+    │                             │
+    │  Processing: 11 cycles      │
+    │  @ 70MHz = 157ns            │
+    │                             │
+    │  Output: 0x48656C6C6F20576F │
+    │          726C64210A0D0000   │
+    │          (Original plaintext)│
+    └──────────┬──────────────────┘
+               │
+               ▼
+
+Step 4: Serialization to CPU
+══════════════════════════════
+    ┌─────────────────────────────┐
+    │  Output Serializer          │
+    │                             │
+    │  128-bit plaintext block    │
+    │  broken into 16 bytes       │
+    │                             │
+    │  Byte 0:  0x48 ('H')        │
+    │  Byte 1:  0x65 ('e')        │
+    │  Byte 2:  0x6C ('l')        │
+    │  ...                        │
+    │  Byte 15: 0x00              │
+    └──────────┬──────────────────┘
+               │
+               ▼
+
+Step 5: CPU Reads Plaintext
+═════════════════════════════
+    ┌──────────────────┐
+    │ rx_data_buffer   │
+    │ holds byte until │
+    │ CPU reads        │
+    │                  │
+    │ Current: 0x48    │
+    │ rx_ready = 1     │
+    └────────┬─────────┘
+             │
+             ▼
+    ┌──────────────────┐
+    │ CPU reads from   │
+    │ RX_DATA (0x0C)   │
+    │                  │
+    │ Value: 'H'       │
+    │ (0x48)           │
+    │                  │
+    │ PLAINTEXT        │
+    └──────────────────┘
+
+Timeline for 16-byte Message:
+═════════════════════════════
+  UART RX (115200):  16 bytes × 86.8μs/byte = 1.39ms
+  AES decryption:    11 cycles @ 70MHz = 157ns
+  CPU reads:         16 reads × ~1 cycle = ~16 cycles
+  
+  Total latency:     ~1.39ms (UART RX is bottleneck)
+  AES overhead:      157ns (0.01% of total time)
+```
+
+---
+
+## 4. Bypass Mode Data Flow (AES_EN=0)
+
+```
+When AES_EN = 0, bypass mode is active:
+═══════════════════════════════════════
+
+Transmission Path (CPU → Serial TX):
+────────────────────────────────────
+    ┌──────────────────┐
+    │  CPU writes to   │
+    │  TX_DATA (0x08)  │
+    │                  │
+    │  Value: 'H'      │
+    │  (0x48)          │
+    └────────┬─────────┘
+             │
+             ▼
+    ┌──────────────────┐
+    │ AES Streaming    │
+    │ Controller       │
+    │                  │
+    │ AES_EN=0         │
+    │ → BYPASS PATH    │
+    └────────┬─────────┘
+             │ (No buffering, no encryption)
+             ▼
+    ┌──────────────────┐
+    │  UART TX         │
+    │                  │
+    │  Transmits 0x48  │
+    │  as plaintext    │
+    └────────┬─────────┘
+             │
+             ▼
+      uart_tx_pin
+      (Plaintext 'H')
+
+Reception Path (Serial RX → CPU):
+──────────────────────────────────
+      uart_rx_pin
+      (Plaintext 'H')
+             │
+             ▼
+    ┌──────────────────┐
+    │  UART RX         │
+    │                  │
+    │  Receives 0x48   │
+    └────────┬─────────┘
+             │
+             ▼
+    ┌──────────────────┐
+    │ AES Streaming    │
+    │ Controller       │
+    │                  │
+    │ AES_EN=0         │
+    │ → BYPASS PATH    │
+    └────────┬─────────┘
+             │ (No buffering, no decryption)
+             ▼
+    ┌──────────────────┐
+    │  CPU reads from  │
+    │  RX_DATA (0x0C)  │
+    │                  │
+    │  Value: 'H'      │
+    │  (0x48)          │
+    └──────────────────┘
+
+Performance in Bypass Mode:
+───────────────────────────
+  - No encryption/decryption delay
+  - No 16-byte buffering required
+  - Direct CPU-to-UART path
+  - Same UART baud rate limits apply
+  - Useful for debugging, development
+```
+
+---
+
+## 5. Full-Duplex Operation
+
+```
+The system supports simultaneous TX and RX encryption/decryption:
+
+    CPU SIDE                    SECURE UART PERIPHERAL                    SERIAL SIDE
+    
+Transmit Path:
+──────────────
+    Write ───►  TX Register  ───►  TX AES  ───►  UART TX  ───►  TX Pin
+    0x48        Interface         Buffer         Shift          (Serial)
+    ('H')                         Encrypt        Register       Ciphertext
+                                  Core
+                                  
+Receive Path:
+─────────────
+    Read  ◄───  RX Register  ◄───  RX AES  ◄───  UART RX  ◄───  RX Pin
+    0x57        Interface         Buffer         Shift          (Serial)
+    ('W')                         Decrypt        Register       Ciphertext
+                                  Core
+
+Independent Operation:
+──────────────────────
+┌──────────────────────────────────────────────────────────────────────┐
+│  TX Path can be encrypting  "Hello World" while...                   │
+│  RX Path is simultaneously decrypting "Welcome" from remote device   │
+│                                                                       │
+│  No conflicts - separate AES cores, buffers, and state machines     │
+└──────────────────────────────────────────────────────────────────────┘
+
+Dual AES Core Architecture:
+────────────────────────────
+    ┌─────────────────────────────────────────────────────┐
+    │  AES TX Core (Encryption Mode)                      │
+    │  - Independent state machine                        │
+    │  - Independent 128-bit plaintext buffer            │
+    │  - Independent round key schedule                   │
+    └─────────────────────────────────────────────────────┘
+    
+    ┌─────────────────────────────────────────────────────┐
+    │  AES RX Core (Decryption Mode)                      │
+    │  - Independent state machine                        │
+    │  - Independent 128-bit ciphertext buffer           │
+    │  - Independent inverse round key schedule           │
+    └─────────────────────────────────────────────────────┘
+    
+    Both cores share the same 128-bit key from AES_KEY0-KEY3 registers
+```
+
+---
+
+## 6. AES Streaming Controller State Machines
+
+```
+TX PATH STATE MACHINE:
+══════════════════════
+
+    ┌────────┐
+    │  IDLE  │◄──────────────────────────┐
+    └───┬────┘                            │
+        │ tx_valid_in && AES_EN          │
+        ▼                                 │
+    ┌────────┐                            │
+    │ BUFFER │ Accumulate bytes           │
+    │  TX    │ (count < 16)              │
+    └───┬────┘                            │
+        │ count == 16                     │
+        ▼                                 │
+    ┌────────┐                            │
+    │ENCRYPT │ AES processing             │
+    │   TX   │ (11 cycles)               │
+    └───┬────┘                            │
+        │ aes_done                        │
+        ▼                                 │
+    ┌────────┐                            │
+    │SERIALIZE│ Output bytes              │
+    │   TX   │ (count < 16)              │
+    └───┬────┘                            │
+        │ count == 16                     │
+        └────────────────────────────────┘
+
+BYPASS TX PATH (when AES_EN=0):
+════════════════════════════════
+
+    ┌────────┐
+    │  IDLE  │◄─────────────┐
+    └───┬────┘              │
+        │ tx_valid_in       │
+        ▼                   │
+    ┌────────┐              │
+    │BYPASS  │ Direct pass  │
+    │   TX   │ through      │
+    └───┬────┘              │
+        │                   │
+        └───────────────────┘
+
+RX PATH STATE MACHINE:
+══════════════════════
+
+    ┌────────┐
+    │  IDLE  │◄──────────────────────────┐
+    └───┬────┘                            │
+        │ rx_valid_in && AES_EN          │
+        ▼                                 │
+    ┌────────┐                            │
+    │ BUFFER │ Accumulate bytes           │
+    │  RX    │ (count < 16)              │
+    └───┬────┘                            │
+        │ count == 16                     │
+        ▼                                 │
+    ┌────────┐                            │
+    │DECRYPT │ AES processing             │
+    │   RX   │ (11 cycles)               │
+    └───┬────┘                            │
+        │ aes_done                        │
+        ▼                                 │
+    ┌────────┐                            │
+    │SERIALIZE│ Output bytes              │
+    │   RX   │ (count < 16)              │
+    └───┬────┘                            │
+        │ count == 16                     │
+        └────────────────────────────────┘
+
+BYPASS RX PATH (when AES_EN=0):
+════════════════════════════════
+
+    ┌────────┐
+    │  IDLE  │◄─────────────┐
+    └───┬────┘              │
+        │ rx_valid_in       │
+        ▼                   │
+    ┌────────┐              │
+    │BYPASS  │ Direct pass  │
+    │   RX   │ through      │
+    └───┬────┘              │
+        │                   │
+        └───────────────────┘
+
+State Transitions with Timing:
+═══════════════════════════════
+
+IDLE → BUFFER:      1 cycle (on valid data)
+BUFFER → ENCRYPT:   1 cycle (when count=16)
+ENCRYPT processing: 11 cycles (AES operation)
+ENCRYPT → SERIALIZE: 1 cycle (on aes_done)
+SERIALIZE → IDLE:   16 cycles (1 per byte output)
+
+Total for one 128-bit block: ~30 cycles @ 70MHz = 428ns
+```
+
+---
+
+## 7. Signal Interface Details
+
+```
+CPU Interface (32-bit peripheral bus):
+══════════════════════════════════════
+
+Inputs from CPU:
+────────────────
+    address[5:0]        - 6-bit register address
+                          (supports up to 64 registers, we use 14)
+    
+    data_in[31:0]       - 32-bit write data
+                          (only lower 8 bits used for TX_DATA/RX_DATA)
+    
+    data_write_n[1:0]   - Write strobe (active low)
+                          00 = Write enabled
+                          11 = No write
+    
+    data_read_n[1:0]    - Read strobe (active low)
+                          00 = Read enabled
+                          11 = No read
+
+Outputs to CPU:
+───────────────
+    data_out[31:0]      - 32-bit read data
+                          (register contents returned)
+    
+    data_ready          - Transaction complete
+                          (set when read/write finishes)
+    
+    interrupt           - Interrupt request
+                          (TX done or RX ready)
+
+UART Physical Interface:
+════════════════════════
+
+Inputs:
+───────
+    uart_rx_pin         - Serial receive data
+                          (ciphertext when AES_EN=1)
+    
+    cts_n               - Clear To Send (flow control)
+                          (active low)
+
+Outputs:
+────────
+    uart_tx_pin         - Serial transmit data
+                          (ciphertext when AES_EN=1)
+    
+    rts_n               - Request To Send (flow control)
+                          (active low)
+
+Internal AES Streaming Interface:
+══════════════════════════════════
+
+TX Path:
+────────
+    tx_data_in[7:0]     - Byte to encrypt
+    tx_valid_in         - Data valid
+    tx_ready_out        - Ready to accept data
+    tx_data_out[7:0]    - Encrypted byte (or plaintext if bypass)
+    tx_valid_out        - Output valid
+    tx_ready_in         - Downstream ready
+
+RX Path:
+────────
+    rx_data_in[7:0]     - Received byte (from UART)
+    rx_valid_in         - Data valid
+    rx_ready_out        - Ready to accept data
+    rx_data_out[7:0]    - Decrypted byte (or plaintext if bypass)
+    rx_valid_out        - Output valid
+    rx_ready_in         - Downstream ready
+```
+
+---
+
+## 8. Register Bit Field Details
+
+```
+UART_CTRL (0x00) - UART Control Register
+═════════════════════════════════════════
+  31                                    6  5      4      3    0
+  ┌─────────────────────────────────────┬───┬─────┬───┬──────┐
+  │          Reserved (0)                │RX │ TX  │ 0 │ BAUD │
+  │                                      │EN │ EN  │   │ SEL  │
+  └─────────────────────────────────────┴───┴─────┴───┴──────┘
+                                          │    │        │
+                                          │    │        └─ [3:0] Baud rate selection
+                                          │    │           0=9600, 1=19200, 2=38400
+                                          │    │           3=115200 (default)
+                                          │    └─ [4] TX enable (1=enable)
+                                          └─ [5] RX enable (1=enable)
+
+UART_STATUS (0x04) - UART Status Register (Read-Only)
+══════════════════════════════════════════════════════
+  31                                3    2       1        0
+  ┌──────────────────────────────────┬────┬───────┬──────────┐
+  │       Reserved (0)                │RX  │  RX   │   TX     │
+  │                                   │ERR │READY  │  BUSY    │
+  └──────────────────────────────────┴────┴───────┴──────────┘
+                                       │      │        │
+                                       │      │        └─ [0] TX busy (1=transmitting)
+                                       │      └─ [1] RX ready (1=data available)
+                                       └─ [2] RX error (1=frame error)
+
+TX_DATA (0x08) - Transmit Data Register (Write-Only)
+═════════════════════════════════════════════════════
+  31                                        8  7      0
+  ┌───────────────────────────────────────┬──────────┐
+  │          Reserved (0)                  │   DATA   │
+  └───────────────────────────────────────┴──────────┘
+                                              │
+                                              └─ [7:0] Byte to transmit
+                                                 (Plaintext - encrypted by hardware)
+
+RX_DATA (0x0C) - Receive Data Register (Read-Only)
+═══════════════════════════════════════════════════
+  31                                        8  7      0
+  ┌───────────────────────────────────────┬──────────┐
+  │          Reserved (0)                  │   DATA   │
+  └───────────────────────────────────────┴──────────┘
+                                              │
+                                              └─ [7:0] Received byte
+                                                 (Plaintext - decrypted by hardware)
+
+INT_EN (0x10) - Interrupt Enable Register
+══════════════════════════════════════════
+  31                                2  1        0
+  ┌──────────────────────────────────┬───┬──────┐
+  │       Reserved (0)                │RX │  TX  │
+  │                                   │IE │  IE  │
+  └──────────────────────────────────┴───┴──────┘
+                                       │     │
+                                       │     └─ [0] TX done interrupt enable
+                                       └─ [1] RX ready interrupt enable
+
+INT_CLR (0x14) - Interrupt Clear Register (Write-Only)
+═══════════════════════════════════════════════════════
+  31                                2  1        0
+  ┌──────────────────────────────────┬───┬──────┐
+  │       Reserved (0)                │RX │  TX  │
+  │                                   │IC │  IC  │
+  └──────────────────────────────────┴───┴──────┘
+                                       │     │
+                                       │     └─ [0] Clear TX interrupt
+                                       └─ [1] Clear RX interrupt
+
+AES_CTRL (0x20) - AES Control Register
+═══════════════════════════════════════
+  31                                    1    0
+  ┌─────────────────────────────────────┬──────┐
+  │          Reserved (0)                │ AES  │
+  │                                      │  EN  │
+  └─────────────────────────────────────┴──────┘
+                                           │
+                                           └─ [0] AES enable
+                                              0 = Bypass mode (plaintext)
+                                              1 = Encrypted mode
+
+AES_STATUS (0x24) - AES Status Register (Read-Only)
+════════════════════════════════════════════════════
+  31                                3  2      1      0
+  ┌──────────────────────────────────┬───┬─────┬──────┐
+  │       Reserved (0)                │KEY│ RX  │  TX  │
+  │                                   │RDY│BUSY │ BUSY │
+  └──────────────────────────────────┴───┴─────┴──────┘
+                                       │    │      │
+                                       │    │      └─ [0] TX AES busy
+                                       │    └─ [1] RX AES busy
+                                       └─ [2] Key ready (all 4 words loaded)
+
+AES_KEY0 (0x28) - AES Key Word 0 (Bits 127-96)
+═══════════════════════════════════════════════
+  31                                           0
+  ┌────────────────────────────────────────────┐
+  │            AES Key [127:96]                │
+  └────────────────────────────────────────────┘
+
+AES_KEY1 (0x2C) - AES Key Word 1 (Bits 95-64)
+══════════════════════════════════════════════
+  31                                           0
+  ┌────────────────────────────────────────────┐
+  │            AES Key [95:64]                 │
+  └────────────────────────────────────────────┘
+
+AES_KEY2 (0x30) - AES Key Word 2 (Bits 63-32)
+══════════════════════════════════════════════
+  31                                           0
+  ┌────────────────────────────────────────────┐
+  │            AES Key [63:32]                 │
+  └────────────────────────────────────────────┘
+
+AES_KEY3 (0x34) - AES Key Word 3 (Bits 31-0)
+═════════════════════════════════════════════
+  31                                           0
+  ┌────────────────────────────────────────────┐
+  │            AES Key [31:0]                  │
+  └────────────────────────────────────────────┘
+                 
+Complete 128-bit Key Assembly:
+───────────────────────────────
+    KEY = {AES_KEY0[31:0], AES_KEY1[31:0], AES_KEY2[31:0], AES_KEY3[31:0]}
+    KEY[127:96] = AES_KEY0
+    KEY[95:64]  = AES_KEY1
+    KEY[63:32]  = AES_KEY2
+    KEY[31:0]   = AES_KEY3
+```
+
+This completes the comprehensive ASCII art diagrams. All diagrams use pure ASCII for maximum compatibility and can be viewed in any text editor or terminal.
