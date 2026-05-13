@@ -1,5 +1,6 @@
 package tb_pkg;
   localparam int unsigned Width = 4;
+  localparam int unsigned ClockPeriod = 20;
   typedef logic [Width-1:0] count_t;
   int unsigned tests_passed = 0;
   int unsigned tests_failed = 0;

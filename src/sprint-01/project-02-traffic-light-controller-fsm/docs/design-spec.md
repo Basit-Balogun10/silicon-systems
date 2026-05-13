@@ -1,155 +1,215 @@
 # Design Specification
+## Project: Adaptive Traffic Light Controller FSM
+### Sprint 1 — Project B
 
-## Project
+---
 
-Traffic Light Controller FSM.
+## What This Is
 
-## Objective
+A synthesizable FSM that controls a single 4-way intersection with two roads:
+North-South (NS) and East-West (EW). At any moment, one direction has green
+and the other is implicitly red. The controller adapts how long each direction
+holds green based on whether vehicles are waiting on the other side.
 
-Build a synthesizable traffic light controller for a single intersection. The controller shall keep one of three legal phases active at a time, enforce a minimum dwell time for each phase, and advance only when the dwell timer and vehicle request rules allow it. Reset shall return the controller to a known safe state immediately.
+---
 
-## Parameter Contract
+## The Four States
 
-| Parameter           | Type             | Required Constraint                                                         | Default | Purpose                                                                               |
-| ------------------- | ---------------- | --------------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------- |
-| `RED_MIN_CYCLES`    | positive integer | `>= 1`                                                                      | `3`     | Minimum time the controller must remain in RED before leaving it.                     |
-| `GREEN_MIN_CYCLES`  | positive integer | `>= 1`                                                                      | `5`     | Minimum time the controller must remain in GREEN before leaving it.                   |
-| `YELLOW_MIN_CYCLES` | positive integer | `>= 1`                                                                      | `2`     | Minimum time the controller must remain in YELLOW before leaving it.                  |
-| `COUNT_WIDTH`       | positive integer | Must be wide enough to represent the largest configured minimum cycle count | `4`     | Internal dwell counter width. The implementation may derive a larger value if needed. |
+```
+NS_GREEN → NS_YELLOW → EW_GREEN → EW_YELLOW → NS_GREEN → ...
+```
 
-## Functional Requirements
+There is no explicit RED state. When NS has green, EW lights are red by
+output decode — not by a separate state. This simplifies the FSM without
+losing any behaviour.
 
-| ID   | Requirement                                                                                                       | Clarification                                                       |
-| ---- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| FR1  | The design shall expose a clock input.                                                                            | `clk` is the only state update clock.                               |
-| FR2  | The design shall expose an asynchronous active-low reset input.                                                   | `reset_n` forces the controller back to RED immediately.            |
-| FR3  | The design shall expose a vehicle request input.                                                                  | `vehicle_request` indicates demand for service at the intersection. |
-| FR4  | The design shall expose RED, YELLOW, and GREEN outputs.                                                           | Only one phase shall be active at a time.                           |
-| FR5  | The design shall support configurable minimum dwell times for each phase.                                         | RED, GREEN, and YELLOW each have their own minimum cycle count.     |
-| FR6  | The design shall remain in RED until RED dwell has expired and vehicle request is present.                        | Vehicle demand does not override the dwell rule.                    |
-| FR7  | The design shall advance from RED to GREEN only when both RED dwell and vehicle request conditions are satisfied. | This is the only legal RED exit path.                               |
-| FR8  | The design shall remain in GREEN until GREEN dwell has expired.                                                   | `vehicle_request` shall not interrupt GREEN.                        |
-| FR9  | The design shall advance from GREEN to YELLOW only when GREEN dwell is satisfied.                                 | GREEN has exactly one legal exit path.                              |
-| FR10 | The design shall remain in YELLOW until YELLOW dwell has expired.                                                 | `vehicle_request` shall not interrupt YELLOW.                       |
-| FR11 | The design shall advance from YELLOW to RED only when YELLOW dwell is satisfied.                                  | YELLOW has exactly one legal exit path.                             |
-| FR12 | The design shall reset to RED with all dwell counters cleared.                                                    | Reset dominates all state and timer behavior.                       |
-| FR13 | The design shall maintain output mutual exclusion.                                                                | Red, yellow, and green shall never be asserted together.            |
-| FR14 | The design shall not skip phases.                                                                                 | The only legal sequence is RED -> GREEN -> YELLOW -> RED.           |
-| FR15 | The design shall sample inputs synchronously on the rising edge of `clk`.                                         | No mid-cycle input change shall directly alter the outputs.         |
+---
+
+## Parameters
+
+| Parameter         | Type             | Default | Purpose                                                    |
+|-------------------|------------------|---------|------------------------------------------------------------|
+| `MIN_GREEN`       | positive integer | 10      | Cycles a direction must hold green before any exit is allowed |
+| `MAX_GREEN`       | positive integer | 30      | Cycles at which a sensor-triggered exit is allowed         |
+| `EXTENSION`       | positive integer | 10      | Extra cycles granted if other direction has no waiting cars |
+| `ABS_MAX_GREEN`   | positive integer | 50      | Hard ceiling — transition happens here regardless          |
+| `YELLOW_CYCLES`   | positive integer | 5       | Fixed yellow duration — no sensor logic applies            |
+
+Constraint: `MIN_GREEN < MAX_GREEN < ABS_MAX_GREEN`.
+Constraint: `MAX_GREEN + EXTENSION <= ABS_MAX_GREEN`.
+
+---
 
 ## Interface
 
-| Signal            | Direction | Description                                |
-| ----------------- | --------- | ------------------------------------------ |
-| `clk`             | input     | Sampling clock for all registered state.   |
-| `reset_n`         | input     | Asynchronous active-low reset.             |
-| `vehicle_request` | input     | Demand input from the intersection sensor. |
-| `red`             | output    | Active-high RED lamp command.              |
-| `yellow`          | output    | Active-high YELLOW lamp command.           |
-| `green`           | output    | Active-high GREEN lamp command.            |
+| Signal          | Direction | Description                                              |
+|-----------------|-----------|----------------------------------------------------------|
+| `clk`           | input     | System clock. All state updates on rising edge.          |
+| `reset_n`       | input     | Asynchronous active-low reset.                           |
+| `ns_sensor`     | input     | High when a vehicle is waiting on the NS road.           |
+| `ew_sensor`     | input     | High when a vehicle is waiting on the EW road.           |
+| `ns_green`      | output    | High when NS direction has green.                        |
+| `ns_yellow`     | output    | High when NS direction is in yellow.                     |
+| `ns_red`        | output    | High when NS direction is red (EW has green or yellow).  |
+| `ew_green`      | output    | High when EW direction has green.                        |
+| `ew_yellow`     | output    | High when EW direction is in yellow.                     |
+| `ew_red`        | output    | High when EW direction is red (NS has green or yellow).  |
+| `conflict`      | output    | Safety flag. High if both directions show green at once. |
 
-## Timing and Behavior
+---
 
-- Reset is asynchronous and dominates both the state register and the dwell counter.
-- The controller changes state only on the rising edge of `clk` when reset is deasserted.
-- `vehicle_request` is sampled on the rising edge and only affects RED exit logic.
-- In RED, the controller shall hold until the minimum RED dwell has elapsed and a request is present.
-- In GREEN, the controller shall hold until the minimum GREEN dwell has elapsed.
-- In YELLOW, the controller shall hold until the minimum YELLOW dwell has elapsed.
-- Output decode shall be a pure function of the current state so outputs are stable between clock edges.
-- The dwell counter shall reset on state entry so each phase measures its own minimum occupancy cleanly.
-- Edge cases include minimum dwell parameters set to 1, reset asserted while `vehicle_request` is high, and repeated request toggling while the controller is not in RED.
+## Green Phase Timing Logic
 
-## Architecture View
+This is the core adaptive behaviour. The same rules apply symmetrically
+to NS_GREEN and EW_GREEN — just swap which sensor is "active side" and
+which is "other side."
 
-### Block Diagram
+```
+Phase timer starts at 0 on state entry.
 
-```mermaid
-flowchart LR
-  CLK[clk] --> REG[state register]
-  RST[reset_n] --> REG
-  REQ[vehicle_request] --> NEXT[next-state logic]
-  REG --> NEXT
-  REG --> DWT[dwell counter]
-  DWT --> NEXT
-  REG --> DEC[output decode]
-  DEC --> RED[red]
-  DEC --> YEL[yellow]
-  DEC --> GRN[green]
-  NEXT --> REG
-  NEXT --> DWT
+timer < MIN_GREEN:
+  → Stay. No exits allowed regardless of sensors.
+
+MIN_GREEN <= timer < MAX_GREEN:
+  → Stay, UNLESS other_sensor = 1 (cars waiting on the other side).
+  → If other_sensor = 1: transition to yellow immediately.
+
+timer == MAX_GREEN:
+  → Check other_sensor.
+  → If other_sensor = 0 (nobody waiting): grant EXTENSION, stay for
+    up to EXTENSION more cycles.
+  → If other_sensor = 1: transition to yellow now.
+
+timer == ABS_MAX_GREEN:
+  → Transition to yellow regardless. Hard cutoff. No further extension.
 ```
 
-### Arrow-by-Arrow Walkthrough
+In plain English: serve at least the minimum, respond to waiting traffic
+after the minimum, extend if the other side is empty, but never exceed
+the absolute maximum.
 
-1. `clk` to state register: defines the only legal sampling moment for state updates.
-2. `reset_n` to state register: immediately clears the machine to RED-safe behavior.
-3. `vehicle_request` to next-state logic: provides the demand condition used only when RED can legally exit.
-4. state register to next-state logic: gives the current phase context used for transition selection.
-5. state register to dwell counter: identifies which phase the timer should measure.
-6. dwell counter to next-state logic: tells the FSM whether the current phase has satisfied its minimum dwell.
-7. state register to output decode: converts internal state into visible light commands.
-8. output decode to red/yellow/green: drives exactly one lamp command high at a time.
-9. next-state logic to state register: captures the selected next phase on the clock edge.
-10. next-state logic to dwell counter: clears or advances the dwell measurement when a new phase begins.
+---
 
-### Architecture Interpretation Notes
+## Yellow Phase Timing Logic
 
-- The state register is the control memory of the controller. If this register is wrong, the whole intersection is wrong.
-- The dwell counter is a guard rail, not a feature. It prevents a phase from ending too early.
-- Next-state logic must decide both legality and priority. If two exits are possible, RED demand gating wins before phase progression, and reset wins before everything else.
-- Output decode should not contain transition logic. If it starts deciding state, debug becomes much harder and timing gets worse.
+Yellow is fixed duration. No sensor logic applies.
+
+```
+timer < YELLOW_CYCLES: stay in yellow.
+timer == YELLOW_CYCLES: transition to the next green phase.
+```
+
+NS_YELLOW → EW_GREEN.
+EW_YELLOW → NS_GREEN.
+
+---
+
+## Conflict Monitor
+
+The `conflict` output is a purely combinational safety check:
+
+```
+conflict = ns_green & ew_green
+```
+
+If both directions ever show green simultaneously, this flag fires
+immediately — no clock edge required. In a real system, this output
+would cut power to all lamps. In this project it is an observable
+output for assertion checking.
+
+---
+
+## Output Decode
+
+| State      | ns_green | ns_yellow | ns_red | ew_green | ew_yellow | ew_red |
+|------------|----------|-----------|--------|----------|-----------|--------|
+| NS_GREEN   | 1        | 0         | 0      | 0        | 0         | 1      |
+| NS_YELLOW  | 0        | 1         | 0      | 0        | 0         | 1      |
+| EW_GREEN   | 0        | 0         | 1      | 1        | 0         | 0      |
+| EW_YELLOW  | 0        | 0         | 1      | 0        | 1         | 0      |
+
+On reset: all outputs go to a safe state — ns_red and ew_red both high,
+all other outputs low.
+
+---
+
+## Reset Behaviour
+
+- Reset is asynchronous and active-low.
+- On reset: state → NS_GREEN (initial state), phase timer → 0, conflict → 0.
+- Reset dominates everything — no timer or sensor value can prevent it.
+
+---
+
+## Functional Requirements
+
+| ID   | Requirement                                                                              |
+|------|------------------------------------------------------------------------------------------|
+| FR1  | Controller shall have clk, reset_n, ns_sensor, ew_sensor inputs.                        |
+| FR2  | Reset shall be asynchronous, active-low, and return state to NS_GREEN immediately.       |
+| FR3  | Controller shall cycle NS_GREEN → NS_YELLOW → EW_GREEN → EW_YELLOW → NS_GREEN only.     |
+| FR4  | No green phase shall exit before MIN_GREEN cycles have elapsed.                          |
+| FR5  | After MIN_GREEN, the active green shall exit early if the other direction sensor is high.|
+| FR6  | At MAX_GREEN, if other sensor is low, grant one EXTENSION period.                        |
+| FR7  | At ABS_MAX_GREEN, transition to yellow regardless of sensor state.                       |
+| FR8  | Yellow duration shall be fixed at YELLOW_CYCLES. Sensors do not affect yellow.           |
+| FR9  | ns_green and ew_green shall never be high simultaneously.                                |
+| FR10 | conflict output shall go high immediately if FR9 is ever violated.                       |
+| FR11 | All outputs shall be stable between clock edges except on asynchronous reset.            |
+| FR12 | Output decode shall be a pure function of state — no transition logic in decode.         |
+
+---
 
 ## Non-Goals
 
-- No pedestrian crossing logic.
+- No pedestrian crossing phases.
 - No emergency vehicle preemption.
-- No flashing-yellow or flashing-red maintenance mode.
-- No sensor debounce block inside the controller.
-- No CDC logic or multi-clock domain handling.
-- No bus interface or software-visible register map.
+- No flashing yellow maintenance mode.
+- No sensor debounce inside the controller.
+- No sensor fault detection. Fault detection requires either a heartbeat
+  protocol from the sensor hardware (which this RTL cannot generate or
+  simulate) or a toggle watchdog (which cannot distinguish a stuck-high
+  sensor from a real traffic jam). Both approaches require hardware
+  assumptions outside the scope of this project.
+- No inter-intersection coordination.
 - No physical lamp driver circuitry.
+- No display output (countdown timer display is a future extension).
 
-## Implementation Notes
+---
 
-- Use an enumerated state type for RED, GREEN, and YELLOW.
-- Keep state update logic and output decode logic separate.
-- Derive the dwell counter width so the configured dwell parameters are representable.
-- Keep the controller synthesizable and avoid latches or combinational feedback loops.
-- If a future version adds sensor synchronization or emergency overrides, that should be a separate documented change rather than a hidden modification.
+## Architecture
+
+```
+clk, reset_n ──────────────────────┐
+                                    ▼
+ns_sensor ──────────────────► next-state logic ──► state register
+ew_sensor ──────────────────►        ▲                    │
+                                     │                    ▼
+                                phase timer ◄──── state register
+                                                          │
+                                                          ▼
+                                                   output decode
+                                                          │
+                         ┌────────────────────────────────┤
+                         ▼          ▼          ▼          ▼
+                      ns_green  ns_yellow  ew_green  ew_yellow
+                         │                    │
+                         └────────────────────┘
+                                   │
+                                   ▼
+                               conflict
+```
+
+---
 
 ## Acceptance Criteria
 
-- Reset returns the controller to RED immediately.
-- RED cannot exit before the RED dwell is satisfied.
-- RED can exit only when a vehicle request is present and the dwell is satisfied.
-- GREEN advances only after GREEN dwell completion.
-- YELLOW advances only after YELLOW dwell completion.
-- The controller never asserts more than one lamp output at once.
-- The controller never skips a phase.
-- The outputs remain stable between clock edges except when reset is asserted.
-- The design compiles cleanly in simulation and is structurally ready for synthesis and implementation flow.
-
-## Traceability
-
-| Requirement | Verification Intent                                           |
-| ----------- | ------------------------------------------------------------- |
-| FR1         | Clocked harness and interface compile check.                  |
-| FR2         | Reset recovery tests from every state.                        |
-| FR3         | Demand-gating tests in RED plus randomized request sequences. |
-| FR4         | Output decode checks and mutual exclusion assertions.         |
-| FR5         | Parameter-boundary tests for minimum dwell values.            |
-| FR6         | RED hold scenario.                                            |
-| FR7         | RED-to-GREEN transition scenario.                             |
-| FR8         | GREEN hold scenario with request toggling.                    |
-| FR9         | GREEN-to-YELLOW transition scenario.                          |
-| FR10        | YELLOW hold scenario with request toggling.                   |
-| FR11        | YELLOW-to-RED transition scenario.                            |
-| FR12        | Reset-in-every-state scenario.                                |
-| FR13        | Output invariant assertions across all scenarios.             |
-| FR14        | Transition-sequence coverage checks.                          |
-| FR15        | Edge-aligned checker hooks and randomized timing stress.      |
-
-## Verification Coupling
-
-This specification is verified by `docs/verification-plan.md`. The verification plan shall treat the transition order, dwell rules, and output exclusivity as contract items rather than as informal expectations.
+- Reset returns the controller to NS_GREEN with timer cleared.
+- No green phase exits before MIN_GREEN.
+- Sensor-triggered early exit works correctly between MIN_GREEN and MAX_GREEN.
+- Extension is granted when other sensor is low at MAX_GREEN.
+- ABS_MAX_GREEN forces transition regardless of sensor state.
+- Yellow always lasts exactly YELLOW_CYCLES.
+- ns_green and ew_green are never simultaneously high.
+- conflict asserts immediately if both greens are ever high.
+- Design compiles cleanly and is structurally ready for synthesis.

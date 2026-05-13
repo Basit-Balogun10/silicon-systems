@@ -1,91 +1,136 @@
 # Design Specification
+## Project: Parameterized N-bit Up/Down Counter
+### Sprint 1 — Project A
 
-## Project
-
-Parameterized N-bit counter.
+---
 
 ## Objective
 
-Build a synthesizable parameterized counter that supports synchronous enable/hold behavior, an asynchronous active-low reset, and configurable width through a parameter.
+Build a synthesizable parameterized counter that supports synchronous
+enable/hold behaviour, an asynchronous active-low reset, configurable
+width, and runtime-selectable count direction (up or down).
 
-## Parameter Contract
+---
 
-- `WIDTH` shall be a positive integer parameter.
-- The default `WIDTH` shall be 4.
-- The `count` output width shall exactly match `WIDTH`.
+## Parameters
 
-## Functional Requirements
+| Parameter | Type             | Default | Purpose                          |
+|-----------|------------------|---------|----------------------------------|
+| `WIDTH`   | positive integer | 4       | Bit-width of the count output.   |
 
-| ID  | Requirement                                                                                     | Clarification                                          |
-| --- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| FR1 | The design shall expose a clock input.                                                          | `clk` is the sampling clock for state updates.         |
-| FR2 | The design shall expose an asynchronous active-low reset input.                                 | `reset_n` drives immediate clearing when asserted low. |
-| FR3 | The design shall expose a synchronous enable input.                                             | `enable` decides whether the count advances or holds.  |
-| FR4 | The design shall expose a positive integer width parameter with default 4.                      | `WIDTH` controls the bit-width of `count`.             |
-| FR5 | The design shall output the current count value.                                                | `count[WIDTH-1:0]` is the sole state output.           |
-| FR6 | On a falling edge of reset, the count shall clear to zero immediately.                          | Reset dominates the register regardless of enable.     |
-| FR7 | On a rising clock edge with reset deasserted and enable high, the count shall increment by one. | Enabled cycles advance the state.                      |
-| FR8 | On a rising clock edge with reset deasserted and enable low, the count shall hold its value.    | Disabled cycles preserve the previous state.           |
-| FR9 | The count shall wrap modulo $2^{WIDTH}$.                                                        | Overflow from all-ones returns to zero.                |
+The `count` output width shall exactly match `WIDTH`.
 
-## Control Contract
-
-| Condition                   | Required Behavior                                     |
-| --------------------------- | ----------------------------------------------------- |
-| `reset_n = 0`               | Clear `count` immediately, regardless of `enable`.    |
-| `reset_n = 1`, `enable = 0` | Hold the current `count` value on rising clock edges. |
-| `reset_n = 1`, `enable = 1` | Increment `count` on each rising clock edge.          |
-
-This control contract is part of the required behavior, not an optional optimization.
-
-## Timing and Behavior
-
-- Reset is asynchronous and dominates the count register.
-- Enable is sampled only on the rising edge of `clk` when reset is not asserted.
-- Deasserting `reset_n` or toggling `enable` between clock edges does not change `count` by itself.
-- Hold behavior is deliberate and part of the contract, not an accidental side effect.
-- Legal corner cases include `WIDTH = 1`, enable low for multiple cycles, reset assertion while enable is high or low, and wrap from the maximum count value back to zero.
+---
 
 ## Interface
 
-- `clk`: clock input.
-- `reset_n`: active-low reset input.
-- `enable`: synchronous enable input.
-- `count[WIDTH-1:0]`: current count output.
+| Signal          | Direction | Description                                              |
+|-----------------|-----------|----------------------------------------------------------|
+| `clk`           | input     | Sampling clock. All state updates on rising edge.        |
+| `reset_n`       | input     | Asynchronous active-low reset.                           |
+| `enable`        | input     | Synchronous enable. Low = hold, High = count.            |
+| `up_down`       | input     | Direction select. High = count up, Low = count down.     |
+| `count[WIDTH-1:0]` | output | Current count value.                                  |
+
+---
+
+## Control Contract
+
+| Condition                                    | Required Behaviour                                        |
+|----------------------------------------------|-----------------------------------------------------------|
+| `reset_n = 0`                                | Clear `count` to zero immediately, regardless of enable.  |
+| `reset_n = 1`, `enable = 0`                  | Hold current `count` on every rising clock edge.          |
+| `reset_n = 1`, `enable = 1`, `up_down = 1`  | Increment `count` by 1 on each rising clock edge.         |
+| `reset_n = 1`, `enable = 1`, `up_down = 0`  | Decrement `count` by 1 on each rising clock edge.         |
+
+---
+
+## Wrap Behaviour
+
+The counter wraps in both directions using natural unsigned arithmetic:
+
+```
+Counting up:   ...→ (2^WIDTH - 1) → 0 → 1 → ...
+Counting down: ...→ 0 → (2^WIDTH - 1) → (2^WIDTH - 2) → ...
+```
+
+No saturation. No error flag. Wrap is always defined.
+
+---
+
+## Timing and Behaviour
+
+- Reset is asynchronous and dominates the count register.
+- `enable` and `up_down` are sampled on the rising edge of `clk`
+  when reset is not asserted.
+- Changing `up_down` between clock edges has no effect until the
+  next rising edge.
+- Deasserting `reset_n` or toggling `enable` mid-cycle does not
+  change `count` by itself.
+
+---
+
+## Functional Requirements
+
+| ID  | Requirement                                                                                          |
+|-----|------------------------------------------------------------------------------------------------------|
+| FR1 | The design shall expose clk, reset_n, enable, up_down inputs and count output.                       |
+| FR2 | reset_n shall be asynchronous, active-low, and clear count to zero immediately.                      |
+| FR3 | enable shall be synchronous. When low, count shall hold its value on rising edges.                   |
+| FR4 | WIDTH shall be a positive integer parameter with default 4. count width shall equal WIDTH.           |
+| FR5 | When enable is high and up_down is high, count shall increment by 1 on each rising edge.             |
+| FR6 | When enable is high and up_down is low, count shall decrement by 1 on each rising edge.              |
+| FR7 | Count shall wrap on overflow (up) from 2^WIDTH-1 to 0.                                              |
+| FR8 | Count shall wrap on underflow (down) from 0 to 2^WIDTH-1.                                           |
+| FR9 | reset_n shall dominate enable and up_down. Reset clears count regardless of other inputs.            |
+
+---
 
 ## Non-Goals
 
+- No saturation mode (count stops at max/min without wrapping).
+- No load/preset input.
+- No carry/borrow output.
 - No CDC logic.
 - No bus interface.
-- No handshake protocol.
-- No power, timing-closure, or physical implementation optimizations at this stage.
+- No physical implementation optimizations at this stage.
+
+---
 
 ## Implementation Notes
 
-- Keep the RTL synthesizable.
-- Avoid driving a clock from inside the DUT.
-- Keep testbench stimulus outside the DUT.
-- Preserve parameterization so width changes do not require code duplication.
+- Use `always_ff` for the count register.
+- Keep the RTL synthesizable — avoid latches and combinational loops.
+- The up/down direction is purely combinational input to the next-state
+  logic — no state register needed for direction.
+- Wrap is free: unsigned arithmetic in `always_ff` wraps naturally at
+  2^WIDTH without any explicit check.
+
+---
 
 ## Acceptance Criteria
 
-- Reset clears the count immediately when asserted low.
-- Hold cycles do not change the count when `enable` is low.
-- Reset has priority over enable.
-- Reset release does not cause a spurious increment before the next rising clock edge.
-- The output increments by one on each rising clock edge while reset is deasserted and `enable` is high.
-- The output matches the expected modulo behavior for the configured width.
-- The design compiles cleanly in simulation and is structurally ready for synthesis flow.
+- Reset clears count immediately when reset_n is asserted low.
+- Hold cycles do not change count when enable is low, regardless of up_down.
+- reset_n has priority over enable and up_down.
+- Count increments by 1 each enabled up cycle.
+- Count decrements by 1 each enabled down cycle.
+- Count wraps correctly from max to 0 (up direction).
+- Count wraps correctly from 0 to max (down direction).
+- Design compiles cleanly and is structurally ready for synthesis.
+
+---
 
 ## Traceability
 
-- FR1 to FR5 are verified by interface-compile checks and the smoke tests.
-- FR6 is verified by the asynchronous reset test and the reset-priority test.
-- FR7 is verified by the increment and randomized reset-enable tests.
-- FR8 is verified by the hold behavior test and the randomized reset-enable tests.
-- FR9 is verified by the wrap and long-run enabled tests.
-
-## Verification Coupling
-
-- This spec is verified by the verification plan in `docs/verification-plan.md`.
-- Smoke, directed, and randomized test intents should trace back to the requirements above.
+| Requirement | Verification Intent                                           |
+|-------------|---------------------------------------------------------------|
+| FR1         | Interface compile check, all scenarios.                       |
+| FR2         | Async reset test, reset priority test.                        |
+| FR3         | Hold behaviour test, randomized enable sequence.              |
+| FR4         | WIDTH=1 boundary test, parameter compile check.               |
+| FR5         | Increment test, long-run up sequence.                         |
+| FR6         | Decrement test, long-run down sequence.                       |
+| FR7         | Wrap up test.                                                 |
+| FR8         | Wrap down test.                                               |
+| FR9         | Reset priority test, randomized reset/enable/direction stress.|
